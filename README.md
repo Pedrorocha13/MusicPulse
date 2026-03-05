@@ -1,5 +1,22 @@
 # MusicPulse
 Sharing some insights and metrics.
+```mermaid
+flowchart LR
+
+    A[Spotify OAuth Login] --> B[Flask Callback Server]
+    B --> C[Access Token + Refresh Token]
+
+    C --> D[Spotify Web API]
+    D --> E[Python ETL Pipeline]
+
+    E --> F[(PostgreSQL Database)]
+
+    F --> G[SQL Analytics]
+    G --> H[Hype Score Calculation]
+
+    H --> I[Power BI Dashboard]
+
+```
 ## Modules
 ### 1 - Heatmap Brazil
 
