@@ -1,0 +1,5 @@
+Spotify App
+
+Client ID- 7dd692d9a76447f7b6d9fd3acc131c6d
+
+Client Secret- 3f255592f5514bfaaa77dd873c4d97da
