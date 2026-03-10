@@ -58,10 +58,6 @@ dwh.bridge_track_artist
 6. Visualização em dashboard
 
 
-
-
-
-
 ```mermaid
 flowchart LR
     A[Spotify Web API] --> B[Python ETL]
@@ -70,6 +66,98 @@ flowchart LR
     D --> E[SQL Analytics]
     E --> F[Power BI Dashboard]
 ```
+
+## Exemplos de Queries
+### Top músicas mais ouvidas
+```SQL
+SELECT
+    t.track_name,
+    COUNT(*) AS total_plays
+FROM dwh.fact_play fp
+JOIN dwh.dim_track t
+    ON fp.track_id = t.track_id
+GROUP BY t.track_name
+ORDER BY total_plays DESC
+LIMIT 10;
+```
+
+### Ranking de Artistas
+```SQL
+SELECT
+    artist_name,
+    total_plays,
+    ROW_NUMBER() OVER (
+        ORDER BY total_plays DESC
+    ) AS artist_rank
+FROM (
+    SELECT
+        a.artist_name,
+        COUNT(*) AS total_plays
+    FROM dwh.fact_play fp
+    JOIN dwh.bridge_track_artist bta
+        ON fp.track_id = bta.track_id
+    JOIN dwh.dim_artist a
+        ON bta.artist_id = a.artist_id
+    GROUP BY a.artist_name
+) ranked_artists;
+```
+
+## Como rodar o projeto
+### 1 - Subir Infraestrutura
+```
+docker-compose up -d
+```
+### 2 - Fazer login no Web Spotify API pelo app.py 
+```
+python app.py
+```
+### 3 - Rodar ingestão
+```
+python etl/ingest_recently_played.py
+```
+### 4 - Rodar transformação
+```
+python etl/load_dwh_from_recently_played.py
+```
+
+## Dashboard (Em desenvolvimento) 
+### O dashboard exibirá:
+* músicas mais ouvidas
+* artistas mais ouvidos
+* evolução temporal de escuta
+* comparação com hype regional
+```
+/docs/dashboard.png
+```
+
+## 🗺 Roadmap
+### Módulo 1 (Hype Score)
+- ✅ Spotify OAuth Authentication
+
+- ✅ Data ingestion pipeline
+
+- ✅ PostgreSQL Data Warehouse
+
+- ✅ SQL analytics queries
+
+-  Top tracks ingestion
+
+-  Regional hype comparison
+
+-  Power BI dashboard
+
+-  Pipeline scheduler
+
+-  Cloud deployment
+### Módulo 2 (HeatMap Brazil)
+
+### Módulo 3 (Prefered artists problably shows in your state)
+
+## Objetivo do Projeto
+### Explorar engenharia de dados aplicada a comportamento musical, criando um pipeline completo de ingestão, modelagem e análise de dados.
+
+## Autor
+### Eu (Pedro Rocha :D)
 
 <br>
 <img width="435" height="452" alt="Logic" src="https://github.com/user-attachments/assets/f8420a5c-89d0-4c58-8e7b-f85dc7325570" />
