@@ -55,12 +55,17 @@ def refresh_access_token(refresh_token: str) -> dict:
     return response.json()
 
 
-def get_recently_played(access_token: str) -> dict:
-    url = "https://api.spotify.com/v1/me/player/recently-played?limit=50"
+def get_recently_played(access_token: str, before: str | None = None) -> dict:
+    url = "https://api.spotify.com/v1/me/player/recently-played"
     headers = {
         "Authorization": f"Bearer {access_token}"
     }
-    response = requests.get(url, headers=headers, timeout=30)
+
+    params: dict[str, int | str] = {"limit": 50}
+    if before:
+        params["before"] = before
+
+    response = requests.get(url, headers=headers, params=params, timeout=30)
     return {
         "status_code": response.status_code,
         "data": response.json() if response.content else {}
@@ -131,26 +136,43 @@ def main() -> None:
     if not access_token:
         raise ValueError("access_token não encontrado no tokens.json")
 
-    result = get_recently_played(access_token)
-
-    if result["status_code"] == 401 and refresh_token:
-        new_tokens = refresh_access_token(refresh_token)
-        tokens["access_token"] = new_tokens["access_token"]
-        tokens["expires_in"] = new_tokens.get("expires_in", tokens.get("expires_in"))
-        save_tokens(tokens)
-
-        result = get_recently_played(tokens["access_token"])
-
-    if result["status_code"] != 200:
-        raise RuntimeError(
-            f"Erro ao buscar recently played: {result['status_code']} - {result['data']}"
-        )
-
-    items = result["data"].get("items", [])
+    all_rows = []
     batch_id = str(uuid4())
-    rows = normalize_recently_played(items, batch_id)
-    inserted = upsert_staging(rows)
+    before = None
 
+    while True:
+        result = get_recently_played(access_token, before=before)
+
+        if result["status_code"] == 401 and refresh_token:
+            new_tokens = refresh_access_token(refresh_token)
+            tokens["access_token"] = new_tokens["access_token"]
+            tokens["expires_in"] = new_tokens.get("expires_in", tokens.get("expires_in"))
+            save_tokens(tokens)
+            access_token = tokens["access_token"]
+
+            result = get_recently_played(access_token, before=before)
+
+        if result["status_code"] != 200:
+            raise RuntimeError(
+                f"Erro ao buscar recently played: {result['status_code']} - {result['data']}"
+            )
+
+        data = result["data"]
+        items = data.get("items", [])
+
+        if not items:
+            break
+
+        rows = normalize_recently_played(items, batch_id)
+        all_rows.extend(rows)
+
+        cursors = data.get("cursors", {})
+        before = cursors.get("before")
+
+        if len(items) < 50 or not before:
+            break
+
+    inserted = upsert_staging(all_rows)
     print(f"Linhas processadas para staging: {inserted}")
 
 
