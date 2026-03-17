@@ -1,52 +1,21 @@
 import json
 import os
-from pathlib import Path
 from uuid import uuid4
 
 import requests
 import psycopg
 from dotenv import load_dotenv
 
+from spotify_auth import (
+    load_tokens,
+    save_tokens,
+    refresh_access_token,
+    require_env,
+)
+
 load_dotenv()
 
-def require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise ValueError(f"Variável de ambiente obrigatória não encontrada: {name}")
-    return value
-
 DATABASE_URL = require_env("DATABASE_URL")
-SPOTIFY_CLIENT_ID = require_env("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = require_env("SPOTIFY_CLIENT_SECRET")
-
-TOKENS_FILE = Path("tokens.json")
-
-def load_tokens() -> dict:
-    if not TOKENS_FILE.exists():
-        raise FileNotFoundError("tokens.json não encontrado.")
-    with TOKENS_FILE.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_tokens(tokens: dict) -> None:
-    with TOKENS_FILE.open("w", encoding="utf-8") as f:
-        json.dump(tokens, f, ensure_ascii=False, indent=2)
-
-def refresh_access_token(refresh_token: str) -> dict:
-    url = "https://accounts.spotify.com/api/token"
-    data = {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-    }
-
-    response = requests.post(
-        url,
-        data=data,
-        auth=(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET),
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json()
 
 def get_top_tracks(access_token: str, time_range: str) -> dict:
     url = "https://api.spotify.com/v1/me/top/tracks"
@@ -89,3 +58,73 @@ def normalize_top_tracks(items: list[dict], batch_id: str, time_range: str) -> l
         )
 
     return rows
+
+
+TIME_RANGES = ("short_term", "medium_term", "long_term")
+
+
+def upsert_staging_top_tracks(rows: list[tuple]) -> int:
+    if not rows:
+        return 0
+
+    query = """
+        INSERT INTO stg.spotify_top_tracks (
+            batch_id,
+            time_range,
+            rank,
+            track_id,
+            payload_json
+        )
+        VALUES (%s, %s, %s, %s, %s::jsonb);
+    """
+
+    with psycopg.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.executemany(query, rows)
+        conn.commit()
+
+    return len(rows)
+
+
+def main() -> None:
+    tokens = load_tokens()
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+
+    if not access_token:
+        raise ValueError("access_token não encontrado no tokens.json")
+
+    all_rows: list[tuple] = []
+    batch_id = str(uuid4())
+
+    for time_range in TIME_RANGES:
+        result = get_top_tracks(access_token, time_range)
+
+        if result["status_code"] == 401 and refresh_token:
+            new_tokens = refresh_access_token(refresh_token)
+            tokens["access_token"] = new_tokens["access_token"]
+            tokens["expires_in"] = new_tokens.get("expires_in", tokens.get("expires_in"))
+            if "refresh_token" in new_tokens:
+                tokens["refresh_token"] = new_tokens["refresh_token"]
+            save_tokens(tokens)
+            access_token = tokens["access_token"]
+
+            result = get_top_tracks(access_token, time_range)
+
+        if result["status_code"] != 200:
+            raise RuntimeError(
+                f"Erro ao buscar top tracks ({time_range}): "
+                f"{result['status_code']} - {result['data']}"
+            )
+
+        items = result["data"].get("items", [])
+        rows = normalize_top_tracks(items, batch_id, time_range)
+        all_rows.extend(rows)
+        print(f"  {time_range}: {len(rows)} faixas")
+
+    inserted = upsert_staging_top_tracks(all_rows)
+    print(f"Linhas inseridas no staging: {inserted}")
+
+
+if __name__ == "__main__":
+    main()

@@ -185,6 +185,8 @@ def main() -> None:
                 upsert_track(cur, track, album.get("id"))
 
                 for idx, artist in enumerate(artists):
+                    if not artist.get("id"):
+                        continue
                     upsert_artist(cur, artist)
                     upsert_bridge(cur, track_id, artist.get("id"), idx)
 
