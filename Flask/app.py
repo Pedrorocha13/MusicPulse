@@ -141,6 +141,8 @@ def recently_played():
 
             tokens["access_token"] = new_access
             tokens["expires_in"] = new_tokens.get("expires_in", tokens.get("expires_in"))
+            if "refresh_token" in new_tokens:
+                tokens["refresh_token"] = new_tokens["refresh_token"]
             save_tokens(tokens)
             access_token = new_access
         else:
@@ -163,6 +165,8 @@ def recently_played():
         # refresh nem sempre devolve refresh_token de novo, então preserva
         tokens["access_token"] = new_access
         tokens["expires_in"] = new_tokens.get("expires_in", tokens.get("expires_in"))
+        if "refresh_token" in new_tokens:
+            tokens["refresh_token"] = new_tokens["refresh_token"]
         save_tokens(tokens)
 
         r = call_api(new_access)
