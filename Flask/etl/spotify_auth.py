@@ -6,9 +6,11 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent.parent
+ENV_FILE = BASE_DIR / ".env"
+TOKENS_FILE = BASE_DIR / "tokens.json"
 
-TOKENS_FILE = Path(__file__).parent.parent / "tokens.json"
+load_dotenv(dotenv_path=ENV_FILE)
 
 
 def require_env(name: str) -> str:
