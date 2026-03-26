@@ -267,3 +267,8 @@
 {"timestamp":"2026-03-26T18:29:59.626285Z","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/musicpulse_pipeline.py","logger":"airflow.models.dagbag.BundleDagBag","filename":"dagbag.py","lineno":593}
 {"timestamp":"2026-03-26T18:30:29.941387Z","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/musicpulse_pipeline.py","logger":"airflow.models.dagbag.BundleDagBag","filename":"dagbag.py","lineno":593}
 {"timestamp":"2026-03-26T18:31:00.266473Z","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/musicpulse_pipeline.py","logger":"airflow.models.dagbag.BundleDagBag","filename":"dagbag.py","lineno":593}
+{"timestamp":"2026-03-26T18:31:30.711162Z","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/musicpulse_pipeline.py","logger":"airflow.models.dagbag.BundleDagBag","filename":"dagbag.py","lineno":593}
+{"timestamp":"2026-03-26T18:31:37.918595Z","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/musicpulse_pipeline.py","logger":"airflow.models.dagbag.BundleDagBag","filename":"dagbag.py","lineno":593}
+{"timestamp":"2026-03-26T18:32:08.305493Z","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/musicpulse_pipeline.py","logger":"airflow.models.dagbag.BundleDagBag","filename":"dagbag.py","lineno":593}
+{"timestamp":"2026-03-26T18:32:38.675166Z","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/musicpulse_pipeline.py","logger":"airflow.models.dagbag.BundleDagBag","filename":"dagbag.py","lineno":593}
+{"timestamp":"2026-03-26T18:33:09.099193Z","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/musicpulse_pipeline.py","logger":"airflow.models.dagbag.BundleDagBag","filename":"dagbag.py","lineno":593}
