@@ -17,6 +17,7 @@
 - [Pré-requisitos](#-pré-requisitos)
 - [Configuração](#-configuração)
 - [Como Executar](#-como-executar)
+- [Pipeline com Apache Airflow](#-pipeline-com-apache-airflow)
 - [Análises SQL](#-análises-sql)
 - [Estrutura do Projeto](#-estrutura-do-projeto)
 - [Roadmap](#️-roadmap)
@@ -45,6 +46,7 @@ O MusicPulse conecta à **Spotify Web API** via OAuth 2.0, ingere dados de músi
 | Flask 3 | Servidor OAuth 2.0 local |
 | PostgreSQL 16 | Banco de dados (staging + DWH) |
 | Docker / Docker Compose | Infraestrutura local |
+| Apache Airflow 3 | Orquestração e agendamento do pipeline ETL |
 | psycopg 3 | Driver PostgreSQL |
 | Spotify Web API | Fonte de dados |
 | pgAdmin 4 | Interface visual do banco |
@@ -58,8 +60,10 @@ O MusicPulse conecta à **Spotify Web API** via OAuth 2.0, ingere dados de músi
 flowchart LR
     A[Spotify Web API] -->|OAuth 2.0| B[Flask app.py]
     B -->|tokens.json| C[Python ETL Scripts]
-    C -->|payload bruto| D[(stg — Staging)]
-    D -->|transformação| E[(dwh — Data Warehouse)]
+    C -->|orquestrado por| G[Apache Airflow DAG]
+    G -->|ingest_recently_played| D[(stg — Staging)]
+    G -->|ingest_top_tracks| D
+    D -->|load_dhw| E[(dwh — Data Warehouse)]
     E -->|SQL queries| F[Análises / Power BI]
 ```
 
@@ -67,9 +71,10 @@ flowchart LR
 
 1. `app.py` inicia o servidor Flask e executa o handshake OAuth com o Spotify
 2. Os tokens de acesso ficam salvos em `tokens.json` (local, apenas para desenvolvimento)
-3. Os scripts ETL usam o token para chamar a API e gravar o payload bruto no schema `stg`
-4. `load_dwh_from_recently_played.py` lê o staging e popula as dimensões e a tabela de fatos no schema `dwh`
-5. As queries em `analytics/` rodam direto no PostgreSQL (via pgAdmin, psql ou Power BI)
+3. O **Apache Airflow** agenda e orquestra a execução diária dos scripts ETL
+4. Os scripts ETL usam o token para chamar a API e gravar o payload bruto no schema `stg`
+5. `load_dwh_from_recently_played.py` lê o staging e popula as dimensões e a tabela de fatos no schema `dwh`
+6. As queries em `analytics/` rodam direto no PostgreSQL (via pgAdmin, psql ou Power BI)
 
 ---
 
@@ -223,12 +228,172 @@ Este script lê o staging, normaliza artistas/álbuns/faixas e popula as tabelas
 
 Abra as queries em `analytics/` no pgAdmin ou em qualquer cliente SQL conectado ao banco:
 
+---
+
+> **Dica:** Os passos 3 e 4 acima podem ser substituídos pelo Apache Airflow, que os executa automaticamente todo dia. Veja a seção [Pipeline com Apache Airflow](#-pipeline-com-apache-airflow).
+
+---
+
 | Arquivo | O que responde |
 |---|---|
 | `analytics/top_tracks.sql` | Quais faixas você mais ouviu |
 | `analytics/top_artists.sql` | Quais artistas dominam sua escuta |
 | `analytics/plays_per_day.sql` | Em quais dias você mais ouve música |
 | `analytics/hype_queries.sql` | Ranking pessoal com window functions |
+
+---
+
+## ⚡ Pipeline com Apache Airflow
+
+O Apache Airflow assume o papel de **orquestrador** do projeto: em vez de executar os scripts ETL manualmente a cada vez, o Airflow agenda, monitora e controla automaticamente a execução do pipeline completo, todo dia à meia-noite UTC.
+
+---
+
+### Visão Geral da DAG
+
+```mermaid
+flowchart LR
+    A([ingest_recently_played]) --> C([load_dhw])
+    B([ingest_top_tracks])      --> C
+```
+
+| Task | Script executado | O que faz |
+|---|---|---|
+| `ingest_recently_played` | `etl/ingest_recently_played.py` | Busca o histórico de plays na API do Spotify e salva em `stg.spotify_recently_played` |
+| `ingest_top_tracks` | `etl/ingest_top_tracks.py` | Busca as top tracks (short/medium/long term) e salva em `stg.spotify_top_tracks` |
+| `load_dhw` | `etl/load_dwh_from_recently_played.py` | Lê o staging e popula as dimensões e a tabela de fatos no schema `dwh` |
+
+As duas tasks de ingestão rodam **em paralelo**. O `load_dhw` só inicia quando **ambas** terminam com sucesso.
+
+---
+
+### Arquitetura dos Serviços Airflow
+
+O stack do Airflow é definido em `airFlow/docker-compose.yml` e sobe **6 serviços**:
+
+| Serviço | Imagem | Função |
+|---|---|---|
+| `postgres` | `postgres:16` | Banco de metadados interno do Airflow (separado do banco do MusicPulse) |
+| `airflow-init` | `apache/airflow:3.1.8` | Roda `airflow db migrate` para inicializar o schema do metadb. Executa uma vez e termina. |
+| `airflow-apiserver` | `apache/airflow:3.1.8` | Serve a UI Web do Airflow na porta `8080` e expõe a Execution API usada pelo Scheduler |
+| `airflow-dag-processor` | `apache/airflow:3.1.8` | Parseia e valida os arquivos `.py` da pasta `dags/` continuamente |
+| `airflow-scheduler` | **imagem customizada** (Dockerfile) | Avalia o schedule de cada DAG e enfileira as execuções. Usa a imagem customizada com as dependências do projeto |
+| `airflow-triggerer` | `apache/airflow:3.1.8` | Gerencia tarefas deferidas (sensors assíncronos, etc.) |
+
+> O `airflow-scheduler` usa uma **imagem customizada** (`airFlow/Dockerfile`) que parte do `apache/airflow:3.1.8` e instala os pacotes extras listados em `requirements-musicpulse.txt` (psycopg, requests, etc.).
+
+---
+
+### Volume Compartilhado
+
+Todos os serviços montam `../Flask` em `/opt/airflow/project/Flask`. Isso significa que os scripts ETL da pasta `Flask/etl/` ficam disponíveis **dentro dos containers do Airflow**, sem precisar copiar arquivos. O `tokens.json` também é compartilhado pelo mesmo caminho.
+
+```yaml
+volumes:
+  - ./dags:/opt/airflow/dags          # DAGs mapeados para dentro do container
+  - ./logs:/opt/airflow/logs          # Logs de execução das tasks
+  - ./plugins:/opt/airflow/plugins    # Plugins customizados (opcional)
+  - ../Flask:/opt/airflow/project/Flask  # Scripts ETL do projeto
+```
+
+---
+
+### Pré-requisito Adicional
+
+Antes de subir o Airflow, certifique-se de ter completado a [autenticação OAuth](#passo-2----autentique-com-o-spotify) e gerado o arquivo `Flask/tokens.json`. O Airflow precisará dele para autenticar nas chamadas à API do Spotify.
+
+---
+
+### Como Executar o Airflow
+
+#### 1. Entre na pasta do Airflow
+
+```bash
+cd airFlow
+```
+
+#### 2. Configure as variáveis de ambiente
+
+Crie um arquivo `.env` dentro de `airFlow/` com o seguinte conteúdo:
+
+```env
+# UID do seu usuário Linux/Mac (no Windows com WSL2, use: id -u)
+AIRFLOW_UID=50000
+
+# Variáveis de conexão ao banco do MusicPulse (mesmo .env do Flask)
+DATABASE_URL=postgresql://musicpulse:sua-senha@host.docker.internal:5432/musicpulse
+```
+
+> **Importante:** `host.docker.internal` é o hostname especial que permite aos containers do Airflow acessarem o PostgreSQL do MusicPulse, que sobe em outro `docker-compose.yml`.
+
+#### 3. Suba o stack do Airflow
+
+```bash
+docker compose up -d
+```
+
+O serviço `airflow-init` inicializará o banco de metadados automaticamente e depois encerrará. Os demais serviços ficarão em execução.
+
+Verifique o status dos containers:
+
+```bash
+docker compose ps
+```
+
+Aguarde todos estarem `healthy` ou `running`. O `airflow-init` deve aparecer como `exited (0)` — isso é o comportamento esperado.
+
+#### 4. Acesse a UI do Airflow
+
+Abra **http://localhost:8080** no navegador.
+
+- Usuário padrão: `admin`
+- Senha padrão: `admin`
+
+> Na primeira vez, o Airflow cria automaticamente o usuário `admin`. Para criar outros usuários ou trocar a senha, use a aba **Security > Users** na UI.
+
+#### 5. Ative e execute a DAG
+
+1. Na lista de DAGs, localize **`musicpulse_pipeline`**
+2. Clique no toggle para **ativar** a DAG (o status muda de *Paused* para *Active*)
+3. Para acionar manualmente, clique no ícone ▶ **Trigger DAG**
+4. Acompanhe o progresso no **Graph View** ou **Grid View**
+
+A DAG também executa automaticamente todo dia no schedule `@daily` (meia-noite UTC).
+
+---
+
+### Monitorando Execuções
+
+- **Grid View:** visão histórica de todas as execuções com status por task (verde = sucesso, vermelho = falha)
+- **Graph View:** visualiza as dependências entre tasks em tempo real
+- **Logs:** clique em qualquer task e depois em **Log** para ver a saída completa do script Python
+
+---
+
+### Política de Retry
+
+Cada task está configurada com:
+
+```python
+default_args = {
+    'retries': 2,
+    'retry_delay': timedelta(minutes=2),
+}
+```
+
+Se um script falhar (ex: API do Spotify instável, conexão ao banco), o Airflow tentará novamente até **2 vezes**, aguardando **2 minutos** entre cada tentativa.
+
+---
+
+### Parando o Airflow
+
+```bash
+# Para todos os containers mantendo os volumes (metadados preservados)
+docker compose stop
+
+# Para e remove containers + volumes (reset completo)
+docker compose down -v
+```
 
 ---
 
@@ -295,28 +460,42 @@ FROM (
 ## 📁 Estrutura do Projeto
 
 ```
-Flask/
-├── app.py                          # Servidor Flask — OAuth 2.0 com Spotify
-├── requirements.txt                # Dependências Python
-├── docker-compose.yml              # PostgreSQL + pgAdmin
-├── .env.example                    # Template de variáveis de ambiente
-├── tokens.json                     # Tokens OAuth (gerado em runtime, não comitar)
+MusicPulse/
 │
-├── etl/
-│   ├── spotify_auth.py             # Módulo compartilhado: tokens, refresh, helpers
-│   ├── ingest_recently_played.py   # Ingere histórico de plays → stg
-│   ├── ingest_top_tracks.py        # Ingere top tracks → stg
-│   └── load_dwh_from_recently_played.py  # Staging → DWH dimensional
+├── Flask/
+│   ├── app.py                          # Servidor Flask — OAuth 2.0 com Spotify
+│   ├── requirements.txt                # Dependências Python
+│   ├── docker-compose.yml              # PostgreSQL + pgAdmin
+│   ├── .env.example                    # Template de variáveis de ambiente
+│   ├── tokens.json                     # Tokens OAuth (gerado em runtime, não comitar)
+│   │
+│   ├── etl/
+│   │   ├── spotify_auth.py             # Módulo compartilhado: tokens, refresh, helpers
+│   │   ├── ingest_recently_played.py   # Ingere histórico de plays → stg
+│   │   ├── ingest_top_tracks.py        # Ingere top tracks → stg
+│   │   └── load_dwh_from_recently_played.py  # Staging → DWH dimensional
+│   │
+│   ├── analytics/
+│   │   ├── top_tracks.sql              # Top músicas
+│   │   ├── top_artists.sql             # Top artistas
+│   │   ├── plays_per_day.sql           # Volume por dia
+│   │   └── hype_queries.sql            # Rankings com window functions
+│   │
+│   └── database/
+│       └── init/
+│           └── 001_schema.sql          # DDL completo (schemas, tabelas, índices)
 │
-├── analytics/
-│   ├── top_tracks.sql              # Top músicas
-│   ├── top_artists.sql             # Top artistas
-│   ├── plays_per_day.sql           # Volume por dia
-│   └── hype_queries.sql            # Rankings com window functions
-│
-└── database/
-    └── init/
-        └── 001_schema.sql          # DDL completo (schemas, tabelas, índices)
+└── airFlow/
+    ├── docker-compose.yml              # Stack completo do Airflow (6 serviços)
+    ├── Dockerfile                      # Imagem customizada do scheduler com dependências extras
+    ├── requirements-musicpulse.txt     # Pacotes Python instalados no scheduler
+    ├── .env                            # Variáveis de ambiente do Airflow (não comitar)
+    │
+    ├── dags/
+    │   └── musicpulse_pipeline.py      # DAG principal: ingestão + carga DWH
+    │
+    ├── logs/                           # Logs de execução das tasks (gerado em runtime)
+    └── plugins/                        # Plugins customizados do Airflow (reservado)
 ```
 
 ---
@@ -331,7 +510,7 @@ Flask/
 - [x] Queries analíticas SQL
 - [ ] Comparação com tendências regionais
 - [ ] Dashboard Power BI
-- [ ] Agendador de pipeline
+- [x] Agendador de pipeline com Apache Airflow
 
 ### Módulo 2 — HeatMap Brazil
 - [ ] Mapa de calor de artistas por estado
